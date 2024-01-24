@@ -105,7 +105,7 @@ fn draw_intro(frame: &mut [u8]) {
     }
 }
 
-const STEPS: usize = 5;
+const STEPS: usize = 3;
 
 #[inline]
 fn process_input(game: &mut FallingSand) -> Result<(), Error> {
@@ -118,9 +118,13 @@ fn process_input(game: &mut FallingSand) -> Result<(), Error> {
     }
 
     if pushed & PDButtons::kButtonA == PDButtons::kButtonA {
-        for i in 0..STEPS {
-            set(frame, game.position, i);
+        set(frame, game.position, 0);
+        for i in 0..3 {
+            for j in 0..3 {
+                set(frame, game.position + (i - 1), 1 + j);
+            }
         }
+        set(frame, game.position, 4);
     }
 
     if pushed & PDButtons::kButtonLeft == PDButtons::kButtonLeft {
