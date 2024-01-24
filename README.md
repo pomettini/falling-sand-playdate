@@ -2,7 +2,7 @@
 
 Basically a 1:1 port of the excellent [Jason McGhee's Falling Sand tutorial](https://jason.today/falling-sand) for the [Playdate](https://play.date/)
 
-Use the crank to move the sand spawn point horizontally and have fun!
+Press A to drop sand and the left and right arrow to move the sand spawn point!
 
 ## Installation
 
