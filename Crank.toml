@@ -1,0 +1,10 @@
+[[target]]
+name = "falling-sand"
+assets = []
+
+[target.metadata]
+name = "Falling Sand"
+author = "Giorgio Pomettini"
+bundle_id = "com.pomettini.fallingsand"
+version = "0.1"
+image_path = "assets/launcher"
