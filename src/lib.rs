@@ -18,101 +18,148 @@ const ROWS: usize = LCD_ROWS as usize;
 const COLUMNS: usize = 2 + (LCD_COLUMNS / 8) as usize;
 const PIXEL_WIDTH: usize = LCD_COLUMNS as usize;
 
+// Pre-computed lookup tables for ultra-fast bit operations
+static BIT_MASKS: [u8; 8] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
+static INV_BIT_MASKS: [u8; 8] = [0x7F, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD, 0xFE];
+
 fn clear(frame: &mut [u8]) {
-    for f in frame.iter_mut().take(COLUMNS * ROWS) {
-        *f = 0;
+    // Use 32-bit clearing for better performance
+    let frame_u32 =
+        unsafe { core::slice::from_raw_parts_mut(frame.as_mut_ptr() as *mut u32, frame.len() / 4) };
+    for chunk in frame_u32.iter_mut() {
+        *chunk = 0;
     }
 }
 
 #[inline(always)]
-fn get_pixel_fast(frame: &[u8], x: usize, y: usize) -> bool {
+fn get_pixel_ultra_fast(frame: &[u8], x: usize, y: usize) -> bool {
     if x >= PIXEL_WIDTH || y >= ROWS {
         return false;
     }
     let index = y * COLUMNS + (x >> 3);
-    if index < frame.len() {
-        (frame[index] & (1 << (7 - (x & 7)))) != 0
-    } else {
-        false
-    }
+    (frame[index] & BIT_MASKS[x & 7]) != 0
 }
 
 #[inline(always)]
-fn set_pixel_fast(frame: &mut [u8], x: usize, y: usize, value: bool) {
+fn set_pixel_ultra_fast(frame: &mut [u8], x: usize, y: usize, value: bool) {
     if x >= PIXEL_WIDTH || y >= ROWS {
         return;
     }
     let index = y * COLUMNS + (x >> 3);
-    if index < frame.len() {
-        let bit_mask = 1 << (7 - (x & 7));
-        if value {
-            frame[index] |= bit_mask;
-        } else {
-            frame[index] &= !bit_mask;
-        }
+    let bit_idx = x & 7;
+    if value {
+        frame[index] |= BIT_MASKS[bit_idx];
+    } else {
+        frame[index] &= INV_BIT_MASKS[bit_idx];
     }
 }
 
 #[inline]
-fn update_pixel_fast(frame: &mut [u8], x: usize, y: usize) -> bool {
-    if y >= ROWS - 1 || !get_pixel_fast(frame, x, y) {
+fn update_pixel_ultra_fast(frame: &mut [u8], x: usize, y: usize) -> bool {
+    if y >= ROWS - 1 || !get_pixel_ultra_fast(frame, x, y) {
         return false;
     }
 
-    if !get_pixel_fast(frame, x, y + 1) {
-        set_pixel_fast(frame, x, y, false);
-        set_pixel_fast(frame, x, y + 1, true);
-        true
-    } else if x > 0 && !get_pixel_fast(frame, x - 1, y + 1) {
-        set_pixel_fast(frame, x, y, false);
-        set_pixel_fast(frame, x - 1, y + 1, true);
-        true
-    } else if x < PIXEL_WIDTH - 1 && !get_pixel_fast(frame, x + 1, y + 1) {
-        set_pixel_fast(frame, x, y, false);
-        set_pixel_fast(frame, x + 1, y + 1, true);
-        true
-    } else {
-        false
+    let can_move_down = !get_pixel_ultra_fast(frame, x, y + 1);
+    if can_move_down {
+        set_pixel_ultra_fast(frame, x, y, false);
+        set_pixel_ultra_fast(frame, x, y + 1, true);
+        return true;
+    }
+
+    let can_move_left = x > 0 && !get_pixel_ultra_fast(frame, x - 1, y + 1);
+    if can_move_left {
+        set_pixel_ultra_fast(frame, x, y, false);
+        set_pixel_ultra_fast(frame, x - 1, y + 1, true);
+        return true;
+    }
+
+    let can_move_right = x < PIXEL_WIDTH - 1 && !get_pixel_ultra_fast(frame, x + 1, y + 1);
+    if can_move_right {
+        set_pixel_ultra_fast(frame, x, y, false);
+        set_pixel_ultra_fast(frame, x + 1, y + 1, true);
+        return true;
+    }
+
+    false
+}
+
+fn update_optimized(frame: &mut [u8], changed_rows: &mut [bool; ROWS], skip_pattern: usize) {
+    for y in (0..ROWS - 1).rev() {
+        if y % skip_pattern != 0 {
+            continue;
+        } // Skip rows based on performance
+
+        let row_start = y * COLUMNS;
+        let mut row_changed = false;
+
+        for byte_idx in 0..COLUMNS {
+            let byte_val = frame[row_start + byte_idx];
+            if byte_val == 0 {
+                continue;
+            }
+
+            let base_x = byte_idx << 3;
+
+            // Unrolled bit processing for maximum performance
+            if (byte_val & 0x80) != 0 && update_pixel_ultra_fast(frame, base_x, y) {
+                row_changed = true;
+            }
+            if (byte_val & 0x40) != 0 && update_pixel_ultra_fast(frame, base_x + 1, y) {
+                row_changed = true;
+            }
+            if (byte_val & 0x20) != 0 && update_pixel_ultra_fast(frame, base_x + 2, y) {
+                row_changed = true;
+            }
+            if (byte_val & 0x10) != 0 && update_pixel_ultra_fast(frame, base_x + 3, y) {
+                row_changed = true;
+            }
+            if (byte_val & 0x08) != 0 && update_pixel_ultra_fast(frame, base_x + 4, y) {
+                row_changed = true;
+            }
+            if (byte_val & 0x04) != 0 && update_pixel_ultra_fast(frame, base_x + 5, y) {
+                row_changed = true;
+            }
+            if (byte_val & 0x02) != 0 && update_pixel_ultra_fast(frame, base_x + 6, y) {
+                row_changed = true;
+            }
+            if (byte_val & 0x01) != 0 && update_pixel_ultra_fast(frame, base_x + 7, y) {
+                row_changed = true;
+            }
+        }
+
+        if row_changed {
+            changed_rows[y] = true;
+        }
     }
 }
 
-fn update_with_dirty_tracking(frame: &mut [u8], changed_rows: &mut [bool; ROWS]) {
-    const CHUNK_SIZE: usize = 8;
-
-    for chunk_start in (0..ROWS.saturating_sub(1)).step_by(CHUNK_SIZE).rev() {
-        let chunk_end = (chunk_start + CHUNK_SIZE).min(ROWS - 1);
-
-        for y in (chunk_start..chunk_end).rev() {
-            let row_start = y * COLUMNS;
-            let mut row_changed = false;
-
-            for byte_idx in 0..COLUMNS {
-                let byte_val = frame[row_start + byte_idx];
-                if byte_val == 0 {
-                    continue;
-                }
-
-                let base_x = byte_idx << 3; // * 8
-                for bit_idx in 0..8 {
-                    if (byte_val & (1 << (7 - bit_idx))) != 0 {
-                        let x = base_x + bit_idx;
-                        if x < PIXEL_WIDTH && update_pixel_fast(frame, x, y) {
-                            row_changed = true;
-                        }
-                    }
-                }
-            }
-
-            if row_changed {
-                changed_rows[y] = true;
-                if y > 0 {
-                    changed_rows[y - 1] = true;
-                }
-                if y < ROWS - 1 {
-                    changed_rows[y + 1] = true;
-                }
-            }
+fn calculate_screen_density(frame: &[u8]) -> u8 {
+    let mut pixel_count = 0u32;
+    for i in (0..frame.len()).step_by(8) {
+        // Sample every 8th byte
+        if frame[i] != 0 {
+            pixel_count += frame[i].count_ones();
         }
+    }
+    ((pixel_count * 100) / ((frame.len() / 8) * 8) as u32).min(100) as u8
+}
+
+fn update_screen_efficiently(changed_rows: &[bool; ROWS]) {
+    let graphics = Graphics::Cached();
+    let mut batch_start: Option<usize> = None;
+
+    for (y, &changed) in changed_rows.iter().enumerate() {
+        if changed && batch_start.is_none() {
+            batch_start = Some(y);
+        } else if !changed && batch_start.is_some() {
+            graphics.mark_updated_rows(batch_start.unwrap() as i32, y as i32);
+            batch_start = None;
+        }
+    }
+
+    if let Some(start) = batch_start {
+        graphics.mark_updated_rows(start as i32, ROWS as i32);
     }
 }
 
@@ -132,7 +179,7 @@ fn draw_intro(frame: &mut [u8]) {
         .unwrap();
 }
 
-const SAND_BRUSH_SIZE: usize = 33;
+const SAND_BRUSH_SIZE: usize = 5;
 
 fn process_input(game: &mut FallingSand) {
     let frame = Graphics::Cached().get_frame().unwrap();
@@ -149,7 +196,7 @@ fn process_input(game: &mut FallingSand) {
                 let x = game.position + i - half_size;
                 let y = j;
                 if x < PIXEL_WIDTH && y < ROWS {
-                    set_pixel_fast(frame, x, y, true);
+                    set_pixel_ultra_fast(frame, x, y, true);
                 }
             }
         }
@@ -174,28 +221,26 @@ fn process_input(game: &mut FallingSand) {
         return;
     }
 
+    // Calculate density every 16 frames to reduce overhead
+    if game.frame_counter % 16 == 0 {
+        game.screen_density = calculate_screen_density(frame);
+    }
+
     let mut changed_rows = [false; ROWS];
-    let steps = if game.frame_counter % 4 == 0 { 2 } else { 1 };
+
+    // Ultra-aggressive performance scaling
+    let (steps, skip_pattern) = match game.screen_density {
+        0..=25 => (3, 1),  // Light: full quality
+        26..=50 => (2, 1), // Medium: fewer steps
+        51..=75 => (2, 2), // Heavy: skip every other row
+        _ => (1, 3),       // Extreme: minimal simulation
+    };
 
     for _ in 0..steps {
-        update_with_dirty_tracking(frame, &mut changed_rows);
+        update_optimized(frame, &mut changed_rows, skip_pattern);
     }
 
-    // Update only changed rows
-    let graphics = Graphics::Cached();
-    let mut start_row = None;
-    for (y, &changed) in changed_rows.iter().enumerate() {
-        if changed && start_row.is_none() {
-            start_row = Some(y);
-        } else if !changed && start_row.is_some() {
-            graphics.mark_updated_rows(start_row.unwrap() as i32, y as i32);
-            start_row = None;
-        }
-    }
-    if let Some(start) = start_row {
-        graphics.mark_updated_rows(start as i32, ROWS as i32);
-    }
-
+    update_screen_efficiently(&changed_rows);
     game.frame_counter += 1;
 }
 
@@ -203,6 +248,7 @@ struct FallingSand {
     started: bool,
     position: usize,
     frame_counter: u32,
+    screen_density: u8,
 }
 
 impl Game for FallingSand {
@@ -215,6 +261,7 @@ impl Game for FallingSand {
             started: false,
             position: PIXEL_WIDTH / 2,
             frame_counter: 0,
+            screen_density: 0,
         }
     }
 
