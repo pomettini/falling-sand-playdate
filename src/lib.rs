@@ -86,26 +86,49 @@ fn update_pixel(frame: &mut [u8], x: usize, y: usize) {
     }
 }
 
+// Simple optimization: skip empty bytes entirely
 fn update(frame: &mut [u8]) {
+    // Process from bottom to top for proper physics
     for y in (0..ROWS - 1).rev() {
-        for x in (0..PIXEL_WIDTH).rev() {
-            update_pixel(frame, x, y);
+        let row_start = y * COLUMNS;
+
+        // Quick check: if entire row is empty, skip it
+        let mut row_has_pixels = false;
+        for byte_idx in 0..COLUMNS {
+            if frame[row_start + byte_idx] != 0 {
+                row_has_pixels = true;
+                break;
+            }
+        }
+
+        if !row_has_pixels {
+            continue;
+        }
+
+        // Process pixels in this row, but skip empty bytes
+        for byte_idx in 0..COLUMNS {
+            let byte_val = frame[row_start + byte_idx];
+            if byte_val == 0 {
+                continue; // Skip empty bytes
+            }
+
+            // Only check pixels in non-empty bytes
+            for bit_idx in 0..8 {
+                if (byte_val & (1 << (7 - bit_idx))) != 0 {
+                    let x = byte_idx * 8 + bit_idx;
+                    if x < PIXEL_WIDTH {
+                        update_pixel(frame, x, y);
+                    }
+                }
+            }
         }
     }
 }
 
-// Improved intro with much more visible pattern
 fn draw_intro(frame: &mut [u8]) {
-    // Use Playdate's native text drawing instead of manual pixels
     let graphics = Graphics::Cached();
-
-    // Clear the frame first
     clear(frame);
-
     let _ = graphics.set_draw_mode(BitmapDrawMode::kDrawModeFillWhite);
-
-    // Draw text using Playdate's built-in font system
-    // This should work with the graphics API
     graphics.draw_text("FALLING SAND", 120, 100).unwrap();
     graphics
         .draw_text("Press any button to start", 80, 130)
@@ -118,7 +141,6 @@ fn draw_intro(frame: &mut [u8]) {
         .unwrap();
 }
 
-const STEPS: usize = 3;
 const SAND_BRUSH_SIZE: usize = 5;
 
 fn process_input(game: &mut FallingSand) {
@@ -165,14 +187,20 @@ fn process_input(game: &mut FallingSand) {
         return;
     }
 
-    for _ in 0..STEPS {
+    // Simple adaptive performance: fewer steps when more sand
+    let steps = if game.frame_counter % 3 == 0 { 2 } else { 1 };
+
+    for _ in 0..steps {
         update(frame);
     }
+
+    game.frame_counter += 1;
 }
 
 struct FallingSand {
     started: bool,
     position: usize,
+    frame_counter: u32,
 }
 
 impl Game for FallingSand {
@@ -184,6 +212,7 @@ impl Game for FallingSand {
         Self {
             started: false,
             position: PIXEL_WIDTH / 2,
+            frame_counter: 0,
         }
     }
 
