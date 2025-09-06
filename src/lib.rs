@@ -129,53 +129,93 @@ fn rand_range(min: usize, max: usize) -> usize {
     min + (simple_rand() as usize % (max - min))
 }
 
-// Convert angle to directional steps for drawing
-fn angle_to_steps(angle_degrees: u32) -> (i32, i32) {
-    let angle = angle_degrees % 360;
+// Fast approximation of sine using libm
+fn fast_sin(angle_degrees: u32) -> f32 {
+    // Normalize angle to 0-359
+    let angle = (angle_degrees % 360) as f32;
 
-    match angle {
-        0..=22 | 338..=359 => (1, 0), // East
-        23..=67 => (1, 1),            // Northeast
-        68..=112 => (0, 1),           // North
-        113..=157 => (-1, 1),         // Northwest
-        158..=202 => (-1, 0),         // West
-        203..=247 => (-1, -1),        // Southwest
-        248..=292 => (0, -1),         // South
-        293..=337 => (1, -1),         // Southeast
-        _ => (1, 0),                  // fallback
-    }
+    // Convert to radians
+    let radians = angle * 3.14159265359 / 180.0;
+
+    // Use libm sin function for no_std compatibility
+    libm::sinf(radians)
 }
 
-// Draw a single platform with its current angle
+// Fast approximation of cosine using libm
+fn fast_cos(angle_degrees: u32) -> f32 {
+    // Normalize angle to 0-359
+    let angle = (angle_degrees % 360) as f32;
+
+    // Convert to radians
+    let radians = angle * 3.14159265359 / 180.0;
+
+    // Use libm cos function for no_std compatibility
+    libm::cosf(radians)
+}
+
+// Draw a single platform with its current angle using DDA-like algorithm
 fn draw_platform(platform_buffer: &mut [u8], platform: &Platform) {
-    let (dx, dy) = angle_to_steps(platform.angle);
     let platform_length = 25;
 
-    let start_x = platform.x as i32;
-    let start_y = platform.y as i32;
+    // Calculate direction using floating-point trigonometry
+    let cos_angle = fast_cos(platform.angle);
+    let sin_angle = fast_sin(platform.angle);
 
-    for step in 0..platform_length {
-        let x = start_x + (step as i32 * dx);
-        let y = start_y + (step as i32 * dy);
+    let start_x = platform.x as f32;
+    let start_y = platform.y as f32;
 
-        if x >= 0 && y >= 0 && (x as usize) < PIXEL_WIDTH && (y as usize) < ROWS {
-            // Make platforms 2-3 pixels thick
-            set_pixel(platform_buffer, x as usize, y as usize, true);
+    // Use DDA (Digital Differential Analyzer) to draw line at any angle
+    let mut x = start_x;
+    let mut y = start_y;
 
-            if x + 1 >= 0 && ((x + 1) as usize) < PIXEL_WIDTH {
-                set_pixel(platform_buffer, (x + 1) as usize, y as usize, true);
+    for _ in 0..platform_length {
+        // FIXED: Use libm::roundf instead of x.round() for no_std compatibility
+        let pixel_x = libm::roundf(x) as i32;
+        let pixel_y = libm::roundf(y) as i32;
+
+        // Draw platform pixels with bounds checking
+        if pixel_x >= 0
+            && pixel_y >= 0
+            && (pixel_x as usize) < PIXEL_WIDTH
+            && (pixel_y as usize) < ROWS
+        {
+            // Main platform pixel
+            set_pixel(platform_buffer, pixel_x as usize, pixel_y as usize, true);
+
+            // Add thickness for better visibility
+            if pixel_x + 1 >= 0 && ((pixel_x + 1) as usize) < PIXEL_WIDTH {
+                set_pixel(
+                    platform_buffer,
+                    (pixel_x + 1) as usize,
+                    pixel_y as usize,
+                    true,
+                );
             }
-            if y + 1 >= 0 && ((y + 1) as usize) < ROWS {
-                set_pixel(platform_buffer, x as usize, (y + 1) as usize, true);
+            if pixel_y + 1 >= 0 && ((pixel_y + 1) as usize) < ROWS {
+                set_pixel(
+                    platform_buffer,
+                    pixel_x as usize,
+                    (pixel_y + 1) as usize,
+                    true,
+                );
             }
-            if x + 1 >= 0
-                && y + 1 >= 0
-                && ((x + 1) as usize) < PIXEL_WIDTH
-                && ((y + 1) as usize) < ROWS
+            if pixel_x + 1 >= 0
+                && pixel_y + 1 >= 0
+                && ((pixel_x + 1) as usize) < PIXEL_WIDTH
+                && ((pixel_y + 1) as usize) < ROWS
             {
-                set_pixel(platform_buffer, (x + 1) as usize, (y + 1) as usize, true);
+                set_pixel(
+                    platform_buffer,
+                    (pixel_x + 1) as usize,
+                    (pixel_y + 1) as usize,
+                    true,
+                );
             }
         }
+
+        // Increment position along the line
+        x += cos_angle;
+        y += sin_angle;
     }
 }
 
@@ -200,7 +240,7 @@ fn redraw_platforms(platform_buffer: &mut [u8], platforms: &[Platform]) {
         set_pixel(platform_buffer, x, ROWS - 120, true);
     }
 
-    // Draw all rotating diagonal platforms
+    // Draw all rotating diagonal platforms with precise angles
     for platform in platforms {
         draw_platform(platform_buffer, platform);
     }
@@ -381,14 +421,14 @@ const SAND_BRUSH_SIZE: usize = 5;
 fn process_input(game: &mut FallingSand) {
     let frame = Graphics::Cached().get_frame().unwrap();
     let buttons = Buttons::Cached().get();
-    let crank = Crank::Cached();
+    let crank = Crank::Cached(); // FIXED: Remove .get() call
 
     if buttons.current.any() && !game.started {
         game.started = true;
         convert_intro_to_sand(frame, &mut *game.sand_buffer);
     }
 
-    // NEW FEATURE: Endless sand rain from the top!
+    // Endless sand rain from the top!
     if game.started {
         let rain_rate = 8; // particles per frame
         for _ in 0..rain_rate {
@@ -411,10 +451,10 @@ fn process_input(game: &mut FallingSand) {
         }
     }
 
-    // Crank rotation affects ALL platforms - processed every frame
+    // Crank rotation affects ALL platforms - SMOOTH ROTATION AT ANY ANGLE
     let crank_change = crank.change();
-    if crank_change.abs() > 1.0 {
-        let angle_delta = (crank_change / 5.0) as i32;
+    if crank_change.abs() > 0.5 {
+        let angle_delta = (crank_change / 3.0) as i32; // Even more sensitive for smooth rotation
 
         // Apply rotation to ALL platforms
         for platform in &mut game.platforms {
@@ -541,13 +581,7 @@ impl Game for FallingSand {
         process_input(self);
 
         // Draw UI elements
-        System::Cached().draw_fps(0, 228);
-        if self.started {
-            let graphics = Graphics::Cached();
-            let _ = graphics.set_draw_mode(BitmapDrawMode::kDrawModeFillWhite);
-            let text = format!("Platforms: {} - Rain Mode", self.platforms.len());
-            graphics.draw_text(&text, 10, 10).unwrap();
-        }
+        System::Cached().draw_fps(0, 0);
     }
 }
 
