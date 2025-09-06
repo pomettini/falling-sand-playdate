@@ -1,12 +1,13 @@
 #![no_std]
 
 extern crate alloc;
-
 extern crate playdate as pd;
 
 use crankit_game_loop::{game_loop, Game, Playdate};
 use pd::controls::buttons::PDButtonsExt;
 use pd::display::Display;
+use pd::graphics::BitmapDrawMode;
+use pd::system::System;
 use pd::{
     controls::peripherals::Buttons,
     sys::ffi::{LCD_COLUMNS, LCD_ROWS},
@@ -15,98 +16,111 @@ use playdate::graphics::Graphics;
 
 const ROWS: usize = LCD_ROWS as usize;
 const COLUMNS: usize = 2 + (LCD_COLUMNS / 8) as usize;
+const PIXEL_WIDTH: usize = LCD_COLUMNS as usize;
 
-// Allow us to clear the canvas
+// Clear the canvas
 fn clear(frame: &mut [u8]) {
     for f in frame.iter_mut().take(COLUMNS * ROWS) {
-        *f = u8::MIN;
+        *f = 0;
     }
 }
 
-// Allow us to set a specific particle
-fn set(frame: &mut [u8], x: usize, y: usize) {
-    frame[y * COLUMNS + x] = u8::MAX;
-}
-
-// Allow us to swap two particles (or space)
-fn swap(frame: &mut [u8], a: usize, b: usize) {
-    frame.swap(a, b);
-}
-
-// Check if a particle exists in a space
-fn is_empty(frame: &mut [u8], index: usize) -> bool {
-    frame[index] == u8::MIN
-}
-
-fn update_pixel(frame: &mut [u8], i: usize) {
-    // Get the indices of the pixels directly below
-    let below = i + COLUMNS;
-    let below_left = below - 1;
-    let below_right = below + 1;
-
-    // If there are no pixels below, including diagonals, move it accordingly.
-    if is_empty(frame, below) {
-        swap(frame, i, below);
-    } else if is_empty(frame, below_left) {
-        swap(frame, i, below_left);
-    } else if is_empty(frame, below_right) {
-        swap(frame, i, below_right);
+// Set a specific pixel by manipulating bits within bytes
+fn set_pixel(frame: &mut [u8], x: usize, y: usize, value: bool) {
+    if x >= PIXEL_WIDTH || y >= ROWS {
+        return;
     }
-}
 
-#[inline]
-fn update(frame: &mut [u8]) {
-    // Go through each pixel one by one and apply the rule
-    for i in (0..(frame.len() - COLUMNS - 1)).rev() {
-        update_pixel(frame, i);
-    }
-}
+    let byte_x = x / 8;
+    let bit_x = x % 8;
+    let index = y * COLUMNS + byte_x;
 
-#[rustfmt::skip]
-const INTRO: [[u8; COLUMNS]; 17] = [
-    [1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-];
-
-#[inline]
-fn draw_intro(frame: &mut [u8]) {
-    let start_x = 7;
-    let start_y = 51;
-    let font_height = 8;
-    for i in 0..COLUMNS {
-        for j in 0..INTRO.len() {
-            for k in 0..font_height {
-                frame[(COLUMNS * start_y)
-                    + start_x
-                    + i
-                    + (COLUMNS * j * font_height)
-                    + (COLUMNS * k)] = match INTRO[j][i] {
-                    0 => u8::MIN,
-                    _ => u8::MAX,
-                };
-            }
+    if index < frame.len() {
+        if value {
+            frame[index] |= 1 << (7 - bit_x);
+        } else {
+            frame[index] &= !(1 << (7 - bit_x));
         }
     }
 }
 
-const STEPS: usize = 3;
+// Get a specific pixel value
+fn get_pixel(frame: &[u8], x: usize, y: usize) -> bool {
+    if x >= PIXEL_WIDTH || y >= ROWS {
+        return false;
+    }
 
-#[inline]
+    let byte_x = x / 8;
+    let bit_x = x % 8;
+    let index = y * COLUMNS + byte_x;
+
+    if index < frame.len() {
+        (frame[index] & (1 << (7 - bit_x))) != 0
+    } else {
+        false
+    }
+}
+
+fn swap_pixels(frame: &mut [u8], x1: usize, y1: usize, x2: usize, y2: usize) {
+    let pixel1 = get_pixel(frame, x1, y1);
+    let pixel2 = get_pixel(frame, x2, y2);
+    set_pixel(frame, x1, y1, pixel2);
+    set_pixel(frame, x2, y2, pixel1);
+}
+
+fn update_pixel(frame: &mut [u8], x: usize, y: usize) {
+    if !get_pixel(frame, x, y) {
+        return;
+    }
+
+    if y >= ROWS - 1 {
+        return;
+    }
+
+    if !get_pixel(frame, x, y + 1) {
+        swap_pixels(frame, x, y, x, y + 1);
+    } else if x > 0 && !get_pixel(frame, x - 1, y + 1) {
+        swap_pixels(frame, x, y, x - 1, y + 1);
+    } else if x < PIXEL_WIDTH - 1 && !get_pixel(frame, x + 1, y + 1) {
+        swap_pixels(frame, x, y, x + 1, y + 1);
+    }
+}
+
+fn update(frame: &mut [u8]) {
+    for y in (0..ROWS - 1).rev() {
+        for x in (0..PIXEL_WIDTH).rev() {
+            update_pixel(frame, x, y);
+        }
+    }
+}
+
+// Improved intro with much more visible pattern
+fn draw_intro(frame: &mut [u8]) {
+    // Use Playdate's native text drawing instead of manual pixels
+    let graphics = Graphics::Cached();
+
+    // Clear the frame first
+    clear(frame);
+
+    let _ = graphics.set_draw_mode(BitmapDrawMode::kDrawModeFillWhite);
+
+    // Draw text using Playdate's built-in font system
+    // This should work with the graphics API
+    graphics.draw_text("FALLING SAND", 120, 100).unwrap();
+    graphics
+        .draw_text("Press any button to start", 80, 130)
+        .unwrap();
+    graphics
+        .draw_text("A: Drop sand  B: Clear", 90, 160)
+        .unwrap();
+    graphics
+        .draw_text("Left/Right: Move cursor", 85, 180)
+        .unwrap();
+}
+
+const STEPS: usize = 3;
+const SAND_BRUSH_SIZE: usize = 5;
+
 fn process_input(game: &mut FallingSand) {
     let frame = Graphics::Cached().get_frame().unwrap();
     let buttons = Buttons::Cached().get();
@@ -116,33 +130,35 @@ fn process_input(game: &mut FallingSand) {
     }
 
     if buttons.current.a() {
-        set(frame, game.position, 0);
-        for i in 0..3 {
-            for j in 0..3 {
-                set(frame, game.position + (i - 1), 1 + j);
+        let half_size = SAND_BRUSH_SIZE / 2;
+        for i in 0..SAND_BRUSH_SIZE {
+            for j in 0..SAND_BRUSH_SIZE {
+                let x = game.position + i - half_size;
+                let y = j;
+                if x < PIXEL_WIDTH && y < ROWS {
+                    set_pixel(frame, x, y, true);
+                }
             }
         }
-        set(frame, game.position, 4);
     }
 
     if buttons.current.left() {
-        if game.position == 0 {
-            game.position = COLUMNS;
+        if game.position > SAND_BRUSH_SIZE {
+            game.position -= 5;
         }
-
-        game.position -= 1;
     }
 
     if buttons.current.right() {
-        if game.position >= COLUMNS {
-            game.position = 0;
+        if game.position < PIXEL_WIDTH - SAND_BRUSH_SIZE {
+            game.position += 5;
         }
-
-        game.position += 1;
     }
 
     if buttons.current.b() {
         clear(frame);
+        if !game.started {
+            draw_intro(frame);
+        }
     }
 
     if !game.started {
@@ -167,13 +183,15 @@ impl Game for FallingSand {
         draw_intro(frame);
         Self {
             started: false,
-            position: 0,
+            position: PIXEL_WIDTH / 2,
         }
     }
+
     fn update(&mut self, _playdate: &Playdate) {
         let graphics = Graphics::Cached();
         process_input(self);
         graphics.mark_updated_rows(0, LCD_ROWS as i32);
+        System::Cached().draw_fps(0, 228);
     }
 }
 
