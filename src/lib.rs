@@ -18,107 +18,98 @@ const ROWS: usize = LCD_ROWS as usize;
 const COLUMNS: usize = 2 + (LCD_COLUMNS / 8) as usize;
 const PIXEL_WIDTH: usize = LCD_COLUMNS as usize;
 
-// Clear the canvas
 fn clear(frame: &mut [u8]) {
     for f in frame.iter_mut().take(COLUMNS * ROWS) {
         *f = 0;
     }
 }
 
-// Set a specific pixel by manipulating bits within bytes
-fn set_pixel(frame: &mut [u8], x: usize, y: usize, value: bool) {
-    if x >= PIXEL_WIDTH || y >= ROWS {
-        return;
-    }
-
-    let byte_x = x / 8;
-    let bit_x = x % 8;
-    let index = y * COLUMNS + byte_x;
-
-    if index < frame.len() {
-        if value {
-            frame[index] |= 1 << (7 - bit_x);
-        } else {
-            frame[index] &= !(1 << (7 - bit_x));
-        }
-    }
-}
-
-// Get a specific pixel value
-fn get_pixel(frame: &[u8], x: usize, y: usize) -> bool {
+#[inline(always)]
+fn get_pixel_fast(frame: &[u8], x: usize, y: usize) -> bool {
     if x >= PIXEL_WIDTH || y >= ROWS {
         return false;
     }
-
-    let byte_x = x / 8;
-    let bit_x = x % 8;
-    let index = y * COLUMNS + byte_x;
-
+    let index = y * COLUMNS + (x >> 3);
     if index < frame.len() {
-        (frame[index] & (1 << (7 - bit_x))) != 0
+        (frame[index] & (1 << (7 - (x & 7)))) != 0
     } else {
         false
     }
 }
 
-fn swap_pixels(frame: &mut [u8], x1: usize, y1: usize, x2: usize, y2: usize) {
-    let pixel1 = get_pixel(frame, x1, y1);
-    let pixel2 = get_pixel(frame, x2, y2);
-    set_pixel(frame, x1, y1, pixel2);
-    set_pixel(frame, x2, y2, pixel1);
-}
-
-fn update_pixel(frame: &mut [u8], x: usize, y: usize) {
-    if !get_pixel(frame, x, y) {
+#[inline(always)]
+fn set_pixel_fast(frame: &mut [u8], x: usize, y: usize, value: bool) {
+    if x >= PIXEL_WIDTH || y >= ROWS {
         return;
     }
-
-    if y >= ROWS - 1 {
-        return;
-    }
-
-    if !get_pixel(frame, x, y + 1) {
-        swap_pixels(frame, x, y, x, y + 1);
-    } else if x > 0 && !get_pixel(frame, x - 1, y + 1) {
-        swap_pixels(frame, x, y, x - 1, y + 1);
-    } else if x < PIXEL_WIDTH - 1 && !get_pixel(frame, x + 1, y + 1) {
-        swap_pixels(frame, x, y, x + 1, y + 1);
+    let index = y * COLUMNS + (x >> 3);
+    if index < frame.len() {
+        let bit_mask = 1 << (7 - (x & 7));
+        if value {
+            frame[index] |= bit_mask;
+        } else {
+            frame[index] &= !bit_mask;
+        }
     }
 }
 
-// Simple optimization: skip empty bytes entirely
-fn update(frame: &mut [u8]) {
-    // Process from bottom to top for proper physics
-    for y in (0..ROWS - 1).rev() {
-        let row_start = y * COLUMNS;
+#[inline]
+fn update_pixel_fast(frame: &mut [u8], x: usize, y: usize) -> bool {
+    if y >= ROWS - 1 || !get_pixel_fast(frame, x, y) {
+        return false;
+    }
 
-        // Quick check: if entire row is empty, skip it
-        let mut row_has_pixels = false;
-        for byte_idx in 0..COLUMNS {
-            if frame[row_start + byte_idx] != 0 {
-                row_has_pixels = true;
-                break;
-            }
-        }
+    if !get_pixel_fast(frame, x, y + 1) {
+        set_pixel_fast(frame, x, y, false);
+        set_pixel_fast(frame, x, y + 1, true);
+        true
+    } else if x > 0 && !get_pixel_fast(frame, x - 1, y + 1) {
+        set_pixel_fast(frame, x, y, false);
+        set_pixel_fast(frame, x - 1, y + 1, true);
+        true
+    } else if x < PIXEL_WIDTH - 1 && !get_pixel_fast(frame, x + 1, y + 1) {
+        set_pixel_fast(frame, x, y, false);
+        set_pixel_fast(frame, x + 1, y + 1, true);
+        true
+    } else {
+        false
+    }
+}
 
-        if !row_has_pixels {
-            continue;
-        }
+fn update_with_dirty_tracking(frame: &mut [u8], changed_rows: &mut [bool; ROWS]) {
+    const CHUNK_SIZE: usize = 8;
 
-        // Process pixels in this row, but skip empty bytes
-        for byte_idx in 0..COLUMNS {
-            let byte_val = frame[row_start + byte_idx];
-            if byte_val == 0 {
-                continue; // Skip empty bytes
-            }
+    for chunk_start in (0..ROWS.saturating_sub(1)).step_by(CHUNK_SIZE).rev() {
+        let chunk_end = (chunk_start + CHUNK_SIZE).min(ROWS - 1);
 
-            // Only check pixels in non-empty bytes
-            for bit_idx in 0..8 {
-                if (byte_val & (1 << (7 - bit_idx))) != 0 {
-                    let x = byte_idx * 8 + bit_idx;
-                    if x < PIXEL_WIDTH {
-                        update_pixel(frame, x, y);
+        for y in (chunk_start..chunk_end).rev() {
+            let row_start = y * COLUMNS;
+            let mut row_changed = false;
+
+            for byte_idx in 0..COLUMNS {
+                let byte_val = frame[row_start + byte_idx];
+                if byte_val == 0 {
+                    continue;
+                }
+
+                let base_x = byte_idx << 3; // * 8
+                for bit_idx in 0..8 {
+                    if (byte_val & (1 << (7 - bit_idx))) != 0 {
+                        let x = base_x + bit_idx;
+                        if x < PIXEL_WIDTH && update_pixel_fast(frame, x, y) {
+                            row_changed = true;
+                        }
                     }
+                }
+            }
+
+            if row_changed {
+                changed_rows[y] = true;
+                if y > 0 {
+                    changed_rows[y - 1] = true;
+                }
+                if y < ROWS - 1 {
+                    changed_rows[y + 1] = true;
                 }
             }
         }
@@ -141,7 +132,7 @@ fn draw_intro(frame: &mut [u8]) {
         .unwrap();
 }
 
-const SAND_BRUSH_SIZE: usize = 5;
+const SAND_BRUSH_SIZE: usize = 33;
 
 fn process_input(game: &mut FallingSand) {
     let frame = Graphics::Cached().get_frame().unwrap();
@@ -158,22 +149,18 @@ fn process_input(game: &mut FallingSand) {
                 let x = game.position + i - half_size;
                 let y = j;
                 if x < PIXEL_WIDTH && y < ROWS {
-                    set_pixel(frame, x, y, true);
+                    set_pixel_fast(frame, x, y, true);
                 }
             }
         }
     }
 
-    if buttons.current.left() {
-        if game.position > SAND_BRUSH_SIZE {
-            game.position -= 5;
-        }
+    if buttons.current.left() && game.position > SAND_BRUSH_SIZE {
+        game.position -= 5;
     }
 
-    if buttons.current.right() {
-        if game.position < PIXEL_WIDTH - SAND_BRUSH_SIZE {
-            game.position += 5;
-        }
+    if buttons.current.right() && game.position < PIXEL_WIDTH - SAND_BRUSH_SIZE {
+        game.position += 5;
     }
 
     if buttons.current.b() {
@@ -187,11 +174,26 @@ fn process_input(game: &mut FallingSand) {
         return;
     }
 
-    // Simple adaptive performance: fewer steps when more sand
-    let steps = if game.frame_counter % 3 == 0 { 2 } else { 1 };
+    let mut changed_rows = [false; ROWS];
+    let steps = if game.frame_counter % 4 == 0 { 2 } else { 1 };
 
     for _ in 0..steps {
-        update(frame);
+        update_with_dirty_tracking(frame, &mut changed_rows);
+    }
+
+    // Update only changed rows
+    let graphics = Graphics::Cached();
+    let mut start_row = None;
+    for (y, &changed) in changed_rows.iter().enumerate() {
+        if changed && start_row.is_none() {
+            start_row = Some(y);
+        } else if !changed && start_row.is_some() {
+            graphics.mark_updated_rows(start_row.unwrap() as i32, y as i32);
+            start_row = None;
+        }
+    }
+    if let Some(start) = start_row {
+        graphics.mark_updated_rows(start as i32, ROWS as i32);
     }
 
     game.frame_counter += 1;
@@ -217,9 +219,7 @@ impl Game for FallingSand {
     }
 
     fn update(&mut self, _playdate: &Playdate) {
-        let graphics = Graphics::Cached();
         process_input(self);
-        graphics.mark_updated_rows(0, LCD_ROWS as i32);
         System::Cached().draw_fps(0, 228);
     }
 }
