@@ -3,32 +3,42 @@ name = "falling-sand-playdate"
 version = "0.1.0"
 edition = "2021"
 
-[package.metadata.cargo-xbuild]
-memcpy = false
-sysroot_path = "target/sysroot"
-panic_immediate_abort = false
+[lib]
+path = "src/lib.rs"
+crate-type = [
+    "staticlib", # for hardware
+    "dylib",     # for simulator
+    "rlib",      # to link with bin
+]
+
+[dependencies]
+playdate = "0.2.6"
+crankit-game-loop = { git = "https://github.com/pomettini/crankit-game-loop.git" }
+
+[package.metadata.playdate]
+name = "Falling Sand"
+author = "Giorgio Pomettini"
+version = "0.1.0"
+bundle-id = "com.pomettini.fallingsand"
+description = "Falling Sand"
+image-path = "img/system"
+build-number = 1
 
 [profile.dev]
 panic = "abort"
-opt-level = 'z'
-lto = true
+overflow-checks = false
 
 [profile.release]
 panic = "abort"
-opt-level = 'z'
-lto = true
+opt-level = 3
+overflow-checks = false
+lto = "fat"
+incremental = false
+codegen-units = 1
 
-[lib]
-crate-type = ["staticlib", "cdylib"]
+debug = 0
+strip = "symbols"
+debug-assertions = false
 
-[dependencies]
-crankstart = { path = "./crankstart" }
-crankstart-sys = { path = "./crankstart/crankstart-sys" }
-anyhow = { version = "1.0.31", default-features = false }
-euclid = { version = "0.22.9", default-features = false, features = [ "libm" ] }
-hashbrown = "0.14.0"
-
-[dependencies.cstr_core]
-version = "=0.1.2"
-default-features = false
-features = [ "alloc" ]
+[lints.clippy]
+pedantic = "warn"

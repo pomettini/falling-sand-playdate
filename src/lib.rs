@@ -2,18 +2,21 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use anyhow::Error;
-use crankstart::display::Display;
-use crankstart::graphics::*;
-use crankstart::{crankstart_game, system::*, Game, Playdate};
-use crankstart_sys::PDButtons;
+extern crate playdate as pd;
+
+use crankit_game_loop::{game_loop, Game, Playdate};
+use pd::controls::buttons::PDButtonsExt;
+use pd::display::Display;
+use pd::{
+    controls::peripherals::Buttons,
+    sys::ffi::{LCD_COLUMNS, LCD_ROWS},
+};
+use playdate::graphics::Graphics;
 
 const ROWS: usize = LCD_ROWS as usize;
 const COLUMNS: usize = 2 + (LCD_COLUMNS / 8) as usize;
 
 // Allow us to clear the canvas
-#[inline]
 fn clear(frame: &mut [u8]) {
     for f in frame.iter_mut().take(COLUMNS * ROWS) {
         *f = u8::MIN;
@@ -21,24 +24,20 @@ fn clear(frame: &mut [u8]) {
 }
 
 // Allow us to set a specific particle
-#[inline]
 fn set(frame: &mut [u8], x: usize, y: usize) {
     frame[y * COLUMNS + x] = u8::MAX;
 }
 
 // Allow us to swap two particles (or space)
-#[inline]
 fn swap(frame: &mut [u8], a: usize, b: usize) {
     frame.swap(a, b);
 }
 
 // Check if a particle exists in a space
-#[inline]
 fn is_empty(frame: &mut [u8], index: usize) -> bool {
     frame[index] == u8::MIN
 }
 
-#[inline]
 fn update_pixel(frame: &mut [u8], i: usize) {
     // Get the indices of the pixels directly below
     let below = i + COLUMNS;
@@ -108,16 +107,15 @@ fn draw_intro(frame: &mut [u8]) {
 const STEPS: usize = 3;
 
 #[inline]
-fn process_input(game: &mut FallingSand) -> Result<(), Error> {
-    let frame = Graphics::get().get_frame()?;
+fn process_input(game: &mut FallingSand) {
+    let frame = Graphics::Cached().get_frame().unwrap();
+    let buttons = Buttons::Cached().get();
 
-    let (pushed, _, _) = System::get().get_button_state()?;
-
-    if pushed != PDButtons(0) {
+    if buttons.current.any() {
         game.started = true;
     }
 
-    if pushed & PDButtons::kButtonA == PDButtons::kButtonA {
+    if buttons.current.a() {
         set(frame, game.position, 0);
         for i in 0..3 {
             for j in 0..3 {
@@ -127,7 +125,7 @@ fn process_input(game: &mut FallingSand) -> Result<(), Error> {
         set(frame, game.position, 4);
     }
 
-    if pushed & PDButtons::kButtonLeft == PDButtons::kButtonLeft {
+    if buttons.current.left() {
         if game.position == 0 {
             game.position = COLUMNS;
         }
@@ -135,7 +133,7 @@ fn process_input(game: &mut FallingSand) -> Result<(), Error> {
         game.position -= 1;
     }
 
-    if pushed & PDButtons::kButtonRight == PDButtons::kButtonRight {
+    if buttons.current.right() {
         if game.position >= COLUMNS {
             game.position = 0;
         }
@@ -143,19 +141,17 @@ fn process_input(game: &mut FallingSand) -> Result<(), Error> {
         game.position += 1;
     }
 
-    if pushed & PDButtons(64) == PDButtons(64) {
+    if buttons.current.b() {
         clear(frame);
     }
 
     if !game.started {
-        return Ok(());
+        return;
     }
 
     for _ in 0..STEPS {
         update(frame);
     }
-
-    Ok(())
 }
 
 struct FallingSand {
@@ -163,26 +159,22 @@ struct FallingSand {
     position: usize,
 }
 
-impl FallingSand {
-    pub fn new(_playdate: &Playdate) -> Result<Box<Self>, Error> {
-        Display::get().set_refresh_rate(50.0)?;
-        let frame = Graphics::get().get_frame()?;
+impl Game for FallingSand {
+    fn new(_playdate: &Playdate) -> Self {
+        Display::Cached().set_refresh_rate(50.0);
+        let frame = Graphics::Cached().get_frame().unwrap();
         clear(frame);
         draw_intro(frame);
-        Ok(Box::new(Self {
+        Self {
             started: false,
             position: 0,
-        }))
+        }
+    }
+    fn update(&mut self, _playdate: &Playdate) {
+        let graphics = Graphics::Cached();
+        process_input(self);
+        graphics.mark_updated_rows(0, LCD_ROWS as i32);
     }
 }
 
-impl Game for FallingSand {
-    fn update(&mut self, _playdate: &mut Playdate) -> Result<(), Error> {
-        let graphics = Graphics::get();
-        process_input(self)?;
-        graphics.mark_updated_rows(0..=(LCD_ROWS as i32))?;
-        Ok(())
-    }
-}
-
-crankstart_game!(FallingSand);
+game_loop!(FallingSand);
