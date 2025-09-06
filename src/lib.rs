@@ -23,11 +23,9 @@ static BIT_MASKS: [u8; 8] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
 static INV_BIT_MASKS: [u8; 8] = [0x7F, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD, 0xFE];
 
 fn clear(frame: &mut [u8]) {
-    // Use 32-bit clearing for better performance
-    let frame_u32 =
-        unsafe { core::slice::from_raw_parts_mut(frame.as_mut_ptr() as *mut u32, frame.len() / 4) };
-    for chunk in frame_u32.iter_mut() {
-        *chunk = 0;
+    // Safe and complete clearing of frame buffer
+    for f in frame.iter_mut().take(COLUMNS * ROWS) {
+        *f = 0;
     }
 }
 
@@ -88,7 +86,7 @@ fn update_optimized(frame: &mut [u8], changed_rows: &mut [bool; ROWS], skip_patt
     for y in (0..ROWS - 1).rev() {
         if y % skip_pattern != 0 {
             continue;
-        } // Skip rows based on performance
+        }
 
         let row_start = y * COLUMNS;
         let mut row_changed = false;
@@ -130,6 +128,12 @@ fn update_optimized(frame: &mut [u8], changed_rows: &mut [bool; ROWS], skip_patt
 
         if row_changed {
             changed_rows[y] = true;
+            if y > 0 {
+                changed_rows[y - 1] = true;
+            }
+            if y < ROWS - 1 {
+                changed_rows[y + 1] = true;
+            }
         }
     }
 }
@@ -137,7 +141,6 @@ fn update_optimized(frame: &mut [u8], changed_rows: &mut [bool; ROWS], skip_patt
 fn calculate_screen_density(frame: &[u8]) -> u8 {
     let mut pixel_count = 0u32;
     for i in (0..frame.len()).step_by(8) {
-        // Sample every 8th byte
         if frame[i] != 0 {
             pixel_count += frame[i].count_ones();
         }
@@ -212,9 +215,18 @@ fn process_input(game: &mut FallingSand) {
 
     if buttons.current.b() {
         clear(frame);
+
+        // CRITICAL FIX: Mark all rows as updated after clearing to prevent artifacts
+        let graphics = Graphics::Cached();
+        graphics.mark_updated_rows(0, LCD_ROWS as i32);
+
         if !game.started {
             draw_intro(frame);
         }
+
+        // Reset performance tracking after clear
+        game.screen_density = 0;
+        return; // Skip physics simulation this frame
     }
 
     if !game.started {
@@ -228,12 +240,12 @@ fn process_input(game: &mut FallingSand) {
 
     let mut changed_rows = [false; ROWS];
 
-    // Ultra-aggressive performance scaling
+    // Ultra-aggressive performance scaling based on screen density
     let (steps, skip_pattern) = match game.screen_density {
-        0..=25 => (3, 1),  // Light: full quality
-        26..=50 => (2, 1), // Medium: fewer steps
-        51..=75 => (2, 2), // Heavy: skip every other row
-        _ => (1, 3),       // Extreme: minimal simulation
+        0..=25 => (3, 1),  // Light density: full quality
+        26..=50 => (2, 1), // Medium density: fewer steps
+        51..=75 => (2, 2), // High density: skip every other row
+        _ => (1, 3),       // Extreme density: minimal simulation
     };
 
     for _ in 0..steps {
