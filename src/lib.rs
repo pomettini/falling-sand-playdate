@@ -177,9 +177,7 @@ fn draw_intro(frame: &mut [u8]) {
     graphics
         .draw_text("A: Drop sand  B: Clear", 90, 160)
         .unwrap();
-    graphics
-        .draw_text("Left/Right: Move cursor", 85, 180)
-        .unwrap();
+    graphics.draw_text("Arrows: Move cursor", 95, 180).unwrap();
 }
 
 const SAND_BRUSH_SIZE: usize = 5;
@@ -196,8 +194,8 @@ fn process_input(game: &mut FallingSand) {
         let half_size = SAND_BRUSH_SIZE / 2;
         for i in 0..SAND_BRUSH_SIZE {
             for j in 0..SAND_BRUSH_SIZE {
-                let x = game.position + i - half_size;
-                let y = j;
+                let x = game.position_x + i - half_size;
+                let y = game.position_y + j - half_size;
                 if x < PIXEL_WIDTH && y < ROWS {
                     set_pixel_ultra_fast(frame, x, y, true);
                 }
@@ -205,12 +203,22 @@ fn process_input(game: &mut FallingSand) {
         }
     }
 
-    if buttons.current.left() && game.position > SAND_BRUSH_SIZE {
-        game.position -= 5;
+    // Horizontal movement
+    if buttons.current.left() && game.position_x > SAND_BRUSH_SIZE {
+        game.position_x -= 5;
     }
 
-    if buttons.current.right() && game.position < PIXEL_WIDTH - SAND_BRUSH_SIZE {
-        game.position += 5;
+    if buttons.current.right() && game.position_x < PIXEL_WIDTH - SAND_BRUSH_SIZE {
+        game.position_x += 5;
+    }
+
+    // Vertical movement - NEW!
+    if buttons.current.up() && game.position_y > SAND_BRUSH_SIZE {
+        game.position_y -= 5;
+    }
+
+    if buttons.current.down() && game.position_y < ROWS - SAND_BRUSH_SIZE {
+        game.position_y += 5;
     }
 
     if buttons.current.b() {
@@ -258,7 +266,8 @@ fn process_input(game: &mut FallingSand) {
 
 struct FallingSand {
     started: bool,
-    position: usize,
+    position_x: usize, // Horizontal cursor position
+    position_y: usize, // Vertical cursor position - NEW!
     frame_counter: u32,
     screen_density: u8,
 }
@@ -271,7 +280,8 @@ impl Game for FallingSand {
         draw_intro(frame);
         Self {
             started: false,
-            position: PIXEL_WIDTH / 2,
+            position_x: PIXEL_WIDTH / 2, // Start in horizontal center
+            position_y: ROWS / 4,        // Start in upper portion of screen
             frame_counter: 0,
             screen_density: 0,
         }
