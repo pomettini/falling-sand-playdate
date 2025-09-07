@@ -3,6 +3,8 @@
 extern crate alloc;
 extern crate playdate as pd;
 
+use core::f32::consts::PI;
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crankit_game_loop::{game_loop, Game, Playdate};
@@ -161,10 +163,8 @@ fn convert_intro_to_sand(frame: &[u8], sand_buffer: &mut [u8]) {
         for x in 0..PIXEL_WIDTH {
             let byte_index = y * COLUMNS + (x / 8);
             let bit_index = x % 8;
-            if byte_index < frame.len() {
-                if (frame[byte_index] & BIT_MASKS[bit_index]) != 0 {
-                    set_pixel(sand_buffer, x, y, true);
-                }
+            if byte_index < frame.len() && (frame[byte_index] & BIT_MASKS[bit_index]) != 0 {
+                set_pixel(sand_buffer, x, y, true);
             }
         }
     }
@@ -180,14 +180,14 @@ fn rand_range(min: usize, max: usize, rng: &mut SmallRng) -> usize {
 // Fast approximation of sine using libm
 fn fast_sin(angle_degrees: u32) -> f32 {
     let angle = (angle_degrees % 360) as f32;
-    let radians = angle * 3.14159265359 / 180.0;
+    let radians = angle * PI / 180.0;
     libm::sinf(radians)
 }
 
 // Fast approximation of cosine using libm
 fn fast_cos(angle_degrees: u32) -> f32 {
     let angle = (angle_degrees % 360) as f32;
-    let radians = angle * 3.14159265359 / 180.0;
+    let radians = angle * PI / 180.0;
     libm::cosf(radians)
 }
 
@@ -287,8 +287,8 @@ fn apply_platform_forces(
                 && (platform_y as usize) < ROWS
             {
                 // Check area around this platform pixel for sand
-                for dy in -(force_radius as i32)..(force_radius as i32) {
-                    for dx in -(force_radius as i32)..(force_radius as i32) {
+                for dy in -force_radius..force_radius {
+                    for dx in -force_radius..force_radius {
                         let sand_x = platform_x + dx;
                         let sand_y = platform_y + dy;
 
@@ -314,9 +314,9 @@ fn apply_platform_forces(
                                 let mut velocity =
                                     get_velocity(velocity_buffer, sand_x as usize, sand_y as usize);
                                 velocity.vx =
-                                    (velocity.vx as f32 + perpendicular_x).clamp(-20.0, 20.0) as i8;
+                                    (f32::from(velocity.vx) + perpendicular_x).clamp(-20.0, 20.0) as i8;
                                 velocity.vy =
-                                    (velocity.vy as f32 + perpendicular_y).clamp(-20.0, 20.0) as i8;
+                                    (f32::from(velocity.vy) + perpendicular_y).clamp(-20.0, 20.0) as i8;
                                 set_velocity(
                                     velocity_buffer,
                                     sand_x as usize,
@@ -360,12 +360,10 @@ fn update_sand_with_velocity(
                     } else {
                         x
                     }
+                } else if x > 0 {
+                    x - 1
                 } else {
-                    if x > 0 {
-                        x - 1
-                    } else {
-                        x
-                    }
+                    x
                 };
 
                 if target_x != x && !is_solid(sand_buffer, platform_buffer, target_x, y) {
@@ -375,7 +373,7 @@ fn update_sand_with_velocity(
                     set_velocity(velocity_buffer, x, y, SandVelocity::default());
 
                     // Reduce velocity with friction
-                    velocity.vx = (velocity.vx as f32 * 0.7) as i8;
+                    velocity.vx = (f32::from(velocity.vx) * 0.7) as i8;
                     set_velocity(velocity_buffer, target_x, y, velocity);
 
                     changed_rows[y] = true;
@@ -394,8 +392,8 @@ fn update_sand_with_velocity(
 
             // Apply velocity decay
             if velocity.vx.abs() > 0 || velocity.vy.abs() > 0 {
-                velocity.vx = (velocity.vx as f32 * 0.9) as i8;
-                velocity.vy = (velocity.vy as f32 * 0.9) as i8;
+                velocity.vx = (f32::from(velocity.vx) * 0.9) as i8;
+                velocity.vy = (f32::from(velocity.vy) * 0.9) as i8;
                 set_velocity(velocity_buffer, x, y, velocity);
             }
         }
@@ -648,7 +646,7 @@ fn process_input(game: &mut FallingSand) {
         return;
     }
 
-    if game.frame_counter % 16 == 0 {
+    if game.frame_counter.is_multiple_of(16) {
         game.screen_density = calculate_screen_density(&*game.sand_buffer);
     }
 
@@ -710,7 +708,7 @@ impl Game for FallingSand {
         let velocity_buffer = Box::new([SandVelocity::default(); PIXEL_WIDTH * ROWS]);
 
         let time = System::Cached().seconds_since_epoch();
-        let mut rng = SmallRng::seed_from_u64(time as u64);
+        let mut rng = SmallRng::seed_from_u64(u64::from(time));
 
         let platforms = create_initial_platforms(&mut rng);
         redraw_platforms(&mut *platform_buffer, &platforms);
