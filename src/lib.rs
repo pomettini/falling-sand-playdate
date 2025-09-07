@@ -4,47 +4,28 @@ extern crate alloc;
 extern crate playdate as pd;
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crankit_game_loop::{game_loop, Game, Playdate};
 use pd::controls::buttons::PDButtonsExt;
-use pd::controls::peripherals::{Buttons, Crank};
+use pd::controls::peripherals::Buttons;
 use pd::display::Display;
 use pd::graphics::BitmapDrawMode;
 use pd::sys::ffi::LCD_ROWS;
 use pd::system::System;
 use playdate::graphics::Graphics;
-
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
-
 mod consts;
-mod platform;
 mod utils;
-
 use consts::*;
-use platform::*;
 use utils::*;
 
 // Pre-computed lookup tables for ultra-fast bit operations
 static BIT_MASKS: [u8; 8] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
 static INV_BIT_MASKS: [u8; 8] = [0x7F, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD, 0xFE];
 
-// Sand velocity structure for tracking momentum
-#[derive(Clone, Copy, Default)]
-struct SandVelocity {
-    vx: i8, // Horizontal velocity (-127 to 127)
-    vy: i8, // Vertical velocity (-127 to 127)
-}
-
 fn clear_buffer(buffer: &mut [u8]) {
     for f in buffer.iter_mut().take(BUFFER_SIZE) {
         *f = 0;
-    }
-}
-
-fn clear_velocity_buffer(buffer: &mut [SandVelocity]) {
-    for v in buffer.iter_mut().take(BUFFER_SIZE) {
-        *v = SandVelocity::default();
     }
 }
 
@@ -53,10 +34,12 @@ pub fn get_pixel(buffer: &[u8], x: usize, y: usize) -> bool {
     if x >= PIXEL_WIDTH || y >= ROWS {
         return false;
     }
+
     let index = y * COLUMNS + (x >> 3);
     if index >= buffer.len() {
         return false;
     }
+
     (buffer[index] & BIT_MASKS[x & 7]) != 0
 }
 
@@ -65,10 +48,12 @@ fn set_pixel(buffer: &mut [u8], x: usize, y: usize, value: bool) {
     if x >= PIXEL_WIDTH || y >= ROWS {
         return;
     }
+
     let index = y * COLUMNS + (x >> 3);
     if index >= buffer.len() {
         return;
     }
+
     let bit_idx = x & 7;
     if value {
         buffer[index] |= BIT_MASKS[bit_idx];
@@ -78,37 +63,8 @@ fn set_pixel(buffer: &mut [u8], x: usize, y: usize, value: bool) {
 }
 
 #[inline(always)]
-fn get_velocity(buffer: &[SandVelocity], x: usize, y: usize) -> SandVelocity {
-    if x >= PIXEL_WIDTH || y >= ROWS {
-        return SandVelocity::default();
-    }
-    let index = y * PIXEL_WIDTH + x;
-    if index >= buffer.len() {
-        return SandVelocity::default();
-    }
-    buffer[index]
-}
-
-#[inline(always)]
-fn set_velocity(buffer: &mut [SandVelocity], x: usize, y: usize, velocity: SandVelocity) {
-    if x >= PIXEL_WIDTH || y >= ROWS {
-        return;
-    }
-    let index = y * PIXEL_WIDTH + x;
-    if index >= buffer.len() {
-        return;
-    }
-    buffer[index] = velocity;
-}
-
-#[inline(always)]
 fn is_sand(sand_buffer: &[u8], x: usize, y: usize) -> bool {
     get_pixel(sand_buffer, x, y)
-}
-
-#[inline(always)]
-fn is_solid(sand_buffer: &[u8], platform_buffer: &[u8], x: usize, y: usize) -> bool {
-    is_sand(sand_buffer, x, y) || is_platform(platform_buffer, x, y)
 }
 
 // Convert intro text pixels to sand particles
@@ -124,167 +80,29 @@ fn convert_intro_to_sand(frame: &[u8], sand_buffer: &mut [u8]) {
     }
 }
 
-// NEW FEATURE: Apply push forces from rotating platforms to nearby sand
-fn apply_platform_forces(
-    sand_buffer: &mut [u8],
-    velocity_buffer: &mut [SandVelocity],
-    platforms: &[Platform],
-) {
-    for platform in platforms {
-        let rotation_delta = platform.rotation_delta();
-
-        // Only apply forces if platform is rotating
-        if rotation_delta.abs() < 1 {
-            continue;
-        }
-
-        let cos_angle = fast_cos(platform.angle);
-        let sin_angle = fast_sin(platform.angle);
-
-        let platform_length = 30; // Slightly longer detection range
-        let force_radius = 8; // Radius around platform to apply forces
-
-        // Calculate platform line points for collision detection
-        let start_x = platform.x as f32;
-        let start_y = platform.y as f32;
-
-        let mut px = start_x;
-        let mut py = start_y;
-
-        for _ in 0..platform_length {
-            let platform_x = libm::roundf(px) as i32;
-            let platform_y = libm::roundf(py) as i32;
-
-            if platform_x >= 0
-                && platform_y >= 0
-                && (platform_x as usize) < PIXEL_WIDTH
-                && (platform_y as usize) < ROWS
-            {
-                // Check area around this platform pixel for sand
-                for dy in -force_radius..force_radius {
-                    for dx in -force_radius..force_radius {
-                        let sand_x = platform_x + dx;
-                        let sand_y = platform_y + dy;
-
-                        if sand_x >= 0
-                            && sand_y >= 0
-                            && (sand_x as usize) < PIXEL_WIDTH
-                            && (sand_y as usize) < ROWS
-                            && is_sand(sand_buffer, sand_x as usize, sand_y as usize)
-                        {
-                            // Calculate distance from platform
-                            let dist_sq = dx * dx + dy * dy;
-                            if dist_sq <= force_radius * force_radius {
-                                // Calculate perpendicular force direction based on rotation
-                                let force_strength = (force_radius * force_radius - dist_sq) / 4;
-                                let perpendicular_x = -sin_angle
-                                    * rotation_delta as f32
-                                    * force_strength as f32
-                                    * 0.1;
-                                let perpendicular_y =
-                                    cos_angle * rotation_delta as f32 * force_strength as f32 * 0.1;
-
-                                // Apply velocity to sand particle
-                                let mut velocity =
-                                    get_velocity(velocity_buffer, sand_x as usize, sand_y as usize);
-                                velocity.vx = (f32::from(velocity.vx) + perpendicular_x)
-                                    .clamp(-20.0, 20.0)
-                                    as i8;
-                                velocity.vy = (f32::from(velocity.vy) + perpendicular_y)
-                                    .clamp(-20.0, 20.0)
-                                    as i8;
-                                set_velocity(
-                                    velocity_buffer,
-                                    sand_x as usize,
-                                    sand_y as usize,
-                                    velocity,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            px += cos_angle;
-            py += sin_angle;
-        }
-    }
-}
-
-// Enhanced sand physics with velocity-based movement
-fn update_sand_with_velocity(
-    sand_buffer: &mut [u8],
-    platform_buffer: &[u8],
-    velocity_buffer: &mut [SandVelocity],
-    changed_rows: &mut [bool; ROWS],
-) {
-    // Process sand with velocity first (from bottom to top)
+// Simple falling sand physics
+fn update_sand(sand_buffer: &mut [u8], changed_rows: &mut [bool; ROWS]) {
+    // Process sand from bottom to top
     for y in (0..ROWS).rev() {
         for x in 0..PIXEL_WIDTH {
             if !is_sand(sand_buffer, x, y) {
                 continue;
             }
 
-            let mut velocity = get_velocity(velocity_buffer, x, y);
-            let mut moved = false;
-
-            // Apply horizontal velocity
-            if velocity.vx.abs() > 2 {
-                let target_x = if velocity.vx > 0 {
-                    if x + 1 < PIXEL_WIDTH {
-                        x + 1
-                    } else {
-                        x
-                    }
-                } else if x > 0 {
-                    x - 1
-                } else {
-                    x
-                };
-
-                if target_x != x && !is_solid(sand_buffer, platform_buffer, target_x, y) {
-                    // Move sand horizontally
-                    set_pixel(sand_buffer, x, y, false);
-                    set_pixel(sand_buffer, target_x, y, true);
-                    set_velocity(velocity_buffer, x, y, SandVelocity::default());
-
-                    // Reduce velocity with friction
-                    velocity.vx = (f32::from(velocity.vx) * 0.7) as i8;
-                    set_velocity(velocity_buffer, target_x, y, velocity);
-
-                    changed_rows[y] = true;
-                    moved = true;
+            let fell = update_pixel(sand_buffer, x, y);
+            if fell {
+                changed_rows[y] = true;
+                if y + 1 < ROWS {
+                    changed_rows[y + 1] = true;
                 }
-            }
-
-            // Apply normal falling physics if not moved horizontally
-            if !moved {
-                let fell =
-                    update_pixel_with_velocity(sand_buffer, platform_buffer, velocity_buffer, x, y);
-                if fell {
-                    changed_rows[y] = true;
-                }
-            }
-
-            // Apply velocity decay
-            if velocity.vx.abs() > 0 || velocity.vy.abs() > 0 {
-                velocity.vx = (f32::from(velocity.vx) * 0.9) as i8;
-                velocity.vy = (f32::from(velocity.vy) * 0.9) as i8;
-                set_velocity(velocity_buffer, x, y, velocity);
             }
         }
     }
 }
 
-// Enhanced falling sand physics with velocity
+// Basic falling sand physics
 #[inline]
-fn update_pixel_with_velocity(
-    sand_buffer: &mut [u8],
-    platform_buffer: &[u8],
-    velocity_buffer: &mut [SandVelocity],
-    x: usize,
-    y: usize,
-) -> bool {
+fn update_pixel(sand_buffer: &mut [u8], x: usize, y: usize) -> bool {
     if !is_sand(sand_buffer, x, y) {
         return false;
     }
@@ -294,43 +112,23 @@ fn update_pixel_with_velocity(
     }
 
     // Try to move down
-    if !is_solid(sand_buffer, platform_buffer, x, y + 1) {
+    if !is_sand(sand_buffer, x, y + 1) {
         set_pixel(sand_buffer, x, y, false);
         set_pixel(sand_buffer, x, y + 1, true);
-
-        // Transfer velocity
-        let velocity = get_velocity(velocity_buffer, x, y);
-        set_velocity(velocity_buffer, x, y, SandVelocity::default());
-        set_velocity(velocity_buffer, x, y + 1, velocity);
-
         return true;
     }
 
     // Try to move down-left
-    if x > 0 && !is_solid(sand_buffer, platform_buffer, x - 1, y + 1) {
+    if x > 0 && !is_sand(sand_buffer, x - 1, y + 1) {
         set_pixel(sand_buffer, x, y, false);
         set_pixel(sand_buffer, x - 1, y + 1, true);
-
-        // Transfer velocity with slight leftward bias
-        let mut velocity = get_velocity(velocity_buffer, x, y);
-        velocity.vx = (velocity.vx - 1).max(-10);
-        set_velocity(velocity_buffer, x, y, SandVelocity::default());
-        set_velocity(velocity_buffer, x - 1, y + 1, velocity);
-
         return true;
     }
 
     // Try to move down-right
-    if x < PIXEL_WIDTH - 1 && !is_solid(sand_buffer, platform_buffer, x + 1, y + 1) {
+    if x < PIXEL_WIDTH - 1 && !is_sand(sand_buffer, x + 1, y + 1) {
         set_pixel(sand_buffer, x, y, false);
         set_pixel(sand_buffer, x + 1, y + 1, true);
-
-        // Transfer velocity with slight rightward bias
-        let mut velocity = get_velocity(velocity_buffer, x, y);
-        velocity.vx = (velocity.vx + 1).min(10);
-        set_velocity(velocity_buffer, x, y, SandVelocity::default());
-        set_velocity(velocity_buffer, x + 1, y + 1, velocity);
-
         return true;
     }
 
@@ -347,13 +145,10 @@ fn calculate_screen_density(sand_buffer: &[u8]) -> u8 {
     ((pixel_count * 100) / ((sand_buffer.len() / 8) * 8) as u32).min(100) as u8
 }
 
-fn copy_to_frame(sand_buffer: &[u8], platform_buffer: &[u8], frame: &mut [u8]) {
-    let copy_len = BUFFER_SIZE
-        .min(frame.len())
-        .min(sand_buffer.len())
-        .min(platform_buffer.len());
+fn copy_to_frame(sand_buffer: &[u8], frame: &mut [u8]) {
+    let copy_len = BUFFER_SIZE.min(frame.len()).min(sand_buffer.len());
     for i in 0..copy_len {
-        frame[i] = sand_buffer[i] | platform_buffer[i];
+        frame[i] = sand_buffer[i];
     }
 }
 
@@ -383,18 +178,13 @@ fn draw_intro() {
         .draw_text("Press any button to start", 80, 130)
         .unwrap();
     graphics
-        .draw_text("A: Drop sand  B: Clear", 90, 160)
+        .draw_text("A: Drop sand B: Clear", 90, 160)
         .unwrap();
-    graphics
-        .draw_text("Crank: Rotate platforms", 75, 180)
-        .unwrap();
-    graphics.draw_text("Platforms push sand!", 95, 200).unwrap();
 }
 
 fn process_input(game: &mut FallingSand) {
     let frame = Graphics::Cached().get_frame().unwrap();
     let buttons = Buttons::Cached().get();
-    let crank = Crank::Cached();
 
     if buttons.current.any() && !game.started {
         game.started = true;
@@ -403,7 +193,7 @@ fn process_input(game: &mut FallingSand) {
 
     // Endless sand rain from the top!
     if game.started {
-        let rain_rate = 6; // Reduced rate for better platform interaction
+        let rain_rate = 6;
         for _ in 0..rain_rate {
             let x = rand_range(0, PIXEL_WIDTH, &mut game.rng);
             set_pixel(&mut *game.sand_buffer, x, 0, true);
@@ -424,17 +214,6 @@ fn process_input(game: &mut FallingSand) {
         }
     }
 
-    // Crank rotation affects ALL platforms - SMOOTH ROTATION
-    let crank_change = crank.change();
-    if crank_change.abs() > 0.3 {
-        let angle_delta = (crank_change / 2.0) as i32;
-
-        // Apply rotation to ALL platforms
-        for platform in &mut game.platforms {
-            platform.update_angle(angle_delta);
-        }
-    }
-
     // Arrow key movement
     if buttons.current.left() && game.position_x > SAND_BRUSH_SIZE {
         game.position_x -= 5;
@@ -452,27 +231,23 @@ fn process_input(game: &mut FallingSand) {
         game.position_y += 5;
     }
 
-    // B button clears sand and velocities
+    // B button clears sand
     if buttons.current.b() {
         clear_buffer(&mut *game.sand_buffer);
-        clear_velocity_buffer(&mut *game.velocity_buffer);
-
         for f in frame.iter_mut() {
             *f = 0;
         }
         let graphics = Graphics::Cached();
         graphics.mark_updated_rows(0, LCD_ROWS as i32);
-
         if !game.started {
             draw_intro();
         }
-
         game.screen_density = 0;
         return;
     }
 
     if !game.started {
-        copy_to_frame(&*game.sand_buffer, &*game.platform_buffer, frame);
+        copy_to_frame(&*game.sand_buffer, frame);
         draw_intro();
         return;
     }
@@ -481,33 +256,19 @@ fn process_input(game: &mut FallingSand) {
         game.screen_density = calculate_screen_density(&*game.sand_buffer);
     }
 
-    // NEW: Apply platform forces to push sand
-    apply_platform_forces(
-        &mut *game.sand_buffer,
-        &mut *game.velocity_buffer,
-        &game.platforms,
-    );
-
     let mut changed_rows = [false; ROWS];
-
     let steps = match game.screen_density {
-        0..=25 => 2, // Reduced steps for velocity calculations
+        0..=25 => 2,
         26..=50 => 2,
         51..=75 => 1,
         _ => 1,
     };
 
     for _ in 0..steps {
-        // NEW: Use velocity-based sand physics
-        update_sand_with_velocity(
-            &mut *game.sand_buffer,
-            &*game.platform_buffer,
-            &mut *game.velocity_buffer,
-            &mut changed_rows,
-        );
+        update_sand(&mut *game.sand_buffer, &mut changed_rows);
     }
 
-    copy_to_frame(&*game.sand_buffer, &*game.platform_buffer, frame);
+    copy_to_frame(&*game.sand_buffer, frame);
     update_screen_efficiently(&changed_rows);
     game.frame_counter += 1;
 }
@@ -520,34 +281,22 @@ struct FallingSand {
     frame_counter: u32,
     screen_density: u8,
     sand_buffer: Box<[u8; BUFFER_SIZE]>,
-    platform_buffer: Box<[u8; BUFFER_SIZE]>,
-    velocity_buffer: Box<[SandVelocity; PIXEL_WIDTH * ROWS]>, // NEW: Velocity tracking
-    platforms: Vec<Platform>,
 }
 
 impl Game for FallingSand {
     fn new(_playdate: &Playdate) -> Self {
         Display::Cached().set_refresh_rate(50.0);
         let frame = Graphics::Cached().get_frame().unwrap();
-
         for f in frame.iter_mut() {
             *f = 0;
         }
 
         let sand_buffer = Box::new([0; BUFFER_SIZE]);
-        let mut platform_buffer = Box::new([0; BUFFER_SIZE]);
-        let velocity_buffer = Box::new([SandVelocity::default(); PIXEL_WIDTH * ROWS]);
-
         let time = System::Cached().seconds_since_epoch();
-        let mut rng = SmallRng::seed_from_u64(u64::from(time));
+        let rng = SmallRng::seed_from_u64(u64::from(time));
 
-        let platforms = create_initial_platforms(&mut rng);
-        redraw_platforms(&mut *platform_buffer, &platforms);
-
-        copy_to_frame(&*sand_buffer, &*platform_buffer, frame);
+        copy_to_frame(&*sand_buffer, frame);
         draw_intro();
-
-        // Display::Cached().set_scale(scale);
 
         Self {
             rng,
@@ -557,20 +306,11 @@ impl Game for FallingSand {
             frame_counter: 0,
             screen_density: 0,
             sand_buffer,
-            platform_buffer,
-            velocity_buffer,
-            platforms,
         }
     }
 
     fn update(&mut self, _playdate: &Playdate) {
-        // Always redraw platforms EVERY frame before processing input
-        redraw_platforms(&mut *self.platform_buffer, &self.platforms);
-
-        // Process all input
         process_input(self);
-
-        // Draw UI elements
         System::Cached().draw_fps(0, 0);
     }
 }
