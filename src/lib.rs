@@ -3,8 +3,6 @@
 extern crate alloc;
 extern crate playdate as pd;
 
-use core::f32::consts::PI;
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crankit_game_loop::{game_loop, Game, Playdate};
@@ -12,63 +10,24 @@ use pd::controls::buttons::PDButtonsExt;
 use pd::controls::peripherals::{Buttons, Crank};
 use pd::display::Display;
 use pd::graphics::BitmapDrawMode;
-use pd::sys::ffi::{LCD_COLUMNS, LCD_ROWS};
+use pd::sys::ffi::LCD_ROWS;
 use pd::system::System;
 use playdate::graphics::Graphics;
 
 use rand::rngs::SmallRng;
-use rand::RngCore;
 use rand::SeedableRng;
 
-const ROWS: usize = LCD_ROWS as usize;
-const COLUMNS: usize = 2 + (LCD_COLUMNS / 8) as usize;
-const PIXEL_WIDTH: usize = LCD_COLUMNS as usize;
-const BUFFER_SIZE: usize = COLUMNS * ROWS;
+mod consts;
+mod platform;
+mod utils;
+
+use consts::*;
+use platform::*;
+use utils::*;
 
 // Pre-computed lookup tables for ultra-fast bit operations
 static BIT_MASKS: [u8; 8] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
 static INV_BIT_MASKS: [u8; 8] = [0x7F, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD, 0xFE];
-
-// Platform structure with position, angle, and previous angle for rotation detection
-#[derive(Clone, Copy)]
-struct Platform {
-    x: usize,
-    y: usize,
-    angle: u32,
-    prev_angle: u32, // Track previous angle to detect rotation
-}
-
-impl Platform {
-    fn new(x: usize, y: usize, angle: u32) -> Self {
-        Platform {
-            x,
-            y,
-            angle,
-            prev_angle: angle,
-        }
-    }
-
-    fn update_angle(&mut self, delta: i32) {
-        self.prev_angle = self.angle;
-        let angle = (self.angle as i32 + delta) % 360;
-        self.angle = if angle < 0 {
-            (angle + 360) as u32
-        } else {
-            angle as u32
-        };
-    }
-
-    fn rotation_delta(&self) -> i32 {
-        let mut delta = self.angle as i32 - self.prev_angle as i32;
-        if delta > 180 {
-            delta -= 360;
-        }
-        if delta < -180 {
-            delta += 360;
-        }
-        delta
-    }
-}
 
 // Sand velocity structure for tracking momentum
 #[derive(Clone, Copy, Default)]
@@ -90,7 +49,7 @@ fn clear_velocity_buffer(buffer: &mut [SandVelocity]) {
 }
 
 #[inline(always)]
-fn get_pixel(buffer: &[u8], x: usize, y: usize) -> bool {
+pub fn get_pixel(buffer: &[u8], x: usize, y: usize) -> bool {
     if x >= PIXEL_WIDTH || y >= ROWS {
         return false;
     }
@@ -143,11 +102,6 @@ fn set_velocity(buffer: &mut [SandVelocity], x: usize, y: usize, velocity: SandV
 }
 
 #[inline(always)]
-fn is_platform(platform_buffer: &[u8], x: usize, y: usize) -> bool {
-    get_pixel(platform_buffer, x, y)
-}
-
-#[inline(always)]
 fn is_sand(sand_buffer: &[u8], x: usize, y: usize) -> bool {
     get_pixel(sand_buffer, x, y)
 }
@@ -167,86 +121,6 @@ fn convert_intro_to_sand(frame: &[u8], sand_buffer: &mut [u8]) {
                 set_pixel(sand_buffer, x, y, true);
             }
         }
-    }
-}
-
-fn rand_range(min: usize, max: usize, rng: &mut SmallRng) -> usize {
-    if max <= min {
-        return min;
-    }
-    min + (rng.next_u32() as usize % (max - min))
-}
-
-// Fast approximation of sine using libm
-fn fast_sin(angle_degrees: u32) -> f32 {
-    let angle = (angle_degrees % 360) as f32;
-    let radians = angle * PI / 180.0;
-    libm::sinf(radians)
-}
-
-// Fast approximation of cosine using libm
-fn fast_cos(angle_degrees: u32) -> f32 {
-    let angle = (angle_degrees % 360) as f32;
-    let radians = angle * PI / 180.0;
-    libm::cosf(radians)
-}
-
-// Draw a single platform with its current angle using DDA-like algorithm
-fn draw_platform(platform_buffer: &mut [u8], platform: &Platform) {
-    let platform_length = 25;
-
-    let cos_angle = fast_cos(platform.angle);
-    let sin_angle = fast_sin(platform.angle);
-
-    let start_x = platform.x as f32;
-    let start_y = platform.y as f32;
-
-    let mut x = start_x;
-    let mut y = start_y;
-
-    for _ in 0..platform_length {
-        let pixel_x = libm::roundf(x) as i32;
-        let pixel_y = libm::roundf(y) as i32;
-
-        if pixel_x >= 0
-            && pixel_y >= 0
-            && (pixel_x as usize) < PIXEL_WIDTH
-            && (pixel_y as usize) < ROWS
-        {
-            set_pixel(platform_buffer, pixel_x as usize, pixel_y as usize, true);
-
-            if pixel_x + 1 >= 0 && ((pixel_x + 1) as usize) < PIXEL_WIDTH {
-                set_pixel(
-                    platform_buffer,
-                    (pixel_x + 1) as usize,
-                    pixel_y as usize,
-                    true,
-                );
-            }
-            if pixel_y + 1 >= 0 && ((pixel_y + 1) as usize) < ROWS {
-                set_pixel(
-                    platform_buffer,
-                    pixel_x as usize,
-                    (pixel_y + 1) as usize,
-                    true,
-                );
-            }
-            if pixel_x + 1 >= 0
-                && pixel_y + 1 >= 0
-                && ((pixel_x + 1) as usize) < PIXEL_WIDTH
-                && ((pixel_y + 1) as usize) < ROWS
-            {
-                set_pixel(
-                    platform_buffer,
-                    (pixel_x + 1) as usize,
-                    (pixel_y + 1) as usize,
-                    true,
-                );
-            }
-        }
-
-        x += cos_angle;
-        y += sin_angle;
     }
 }
 
@@ -313,10 +187,12 @@ fn apply_platform_forces(
                                 // Apply velocity to sand particle
                                 let mut velocity =
                                     get_velocity(velocity_buffer, sand_x as usize, sand_y as usize);
-                                velocity.vx =
-                                    (f32::from(velocity.vx) + perpendicular_x).clamp(-20.0, 20.0) as i8;
-                                velocity.vy =
-                                    (f32::from(velocity.vy) + perpendicular_y).clamp(-20.0, 20.0) as i8;
+                                velocity.vx = (f32::from(velocity.vx) + perpendicular_x)
+                                    .clamp(-20.0, 20.0)
+                                    as i8;
+                                velocity.vy = (f32::from(velocity.vy) + perpendicular_y)
+                                    .clamp(-20.0, 20.0)
+                                    as i8;
                                 set_velocity(
                                     velocity_buffer,
                                     sand_x as usize,
@@ -461,33 +337,6 @@ fn update_pixel_with_velocity(
     false
 }
 
-// Redraw all platforms to the platform buffer - ALWAYS CALLED EVERY FRAME
-fn redraw_platforms(platform_buffer: &mut [u8], platforms: &[Platform]) {
-    clear_buffer(platform_buffer);
-
-    // Draw static horizontal platforms
-    for x in 50..350 {
-        set_pixel(platform_buffer, x, ROWS - 20, true);
-    }
-
-    for x in 80..200 {
-        set_pixel(platform_buffer, x, ROWS - 60, true);
-    }
-
-    for x in 250..370 {
-        set_pixel(platform_buffer, x, ROWS - 80, true);
-    }
-
-    for x in 150..300 {
-        set_pixel(platform_buffer, x, ROWS - 120, true);
-    }
-
-    // Draw all rotating diagonal platforms with precise angles
-    for platform in platforms {
-        draw_platform(platform_buffer, platform);
-    }
-}
-
 fn calculate_screen_density(sand_buffer: &[u8]) -> u8 {
     let mut pixel_count = 0u32;
     for i in (0..sand_buffer.len()).step_by(8) {
@@ -541,24 +390,6 @@ fn draw_intro() {
         .unwrap();
     graphics.draw_text("Platforms push sand!", 95, 200).unwrap();
 }
-
-// Create initial platforms with random angles
-fn create_initial_platforms(rng: &mut SmallRng) -> Vec<Platform> {
-    let mut platforms = Vec::new();
-
-    // Generate 8 random diagonal platforms with random angles (0-360 degrees)
-    for _ in 0..8 {
-        let x = rand_range(50, PIXEL_WIDTH - 50, rng);
-        let y = rand_range(30, ROWS - 50, rng);
-        let angle = rng.next_u32() % 360;
-
-        platforms.push(Platform::new(x, y, angle));
-    }
-
-    platforms
-}
-
-const SAND_BRUSH_SIZE: usize = 5;
 
 fn process_input(game: &mut FallingSand) {
     let frame = Graphics::Cached().get_frame().unwrap();
