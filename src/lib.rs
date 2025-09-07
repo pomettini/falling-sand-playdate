@@ -4,7 +4,6 @@ extern crate alloc;
 extern crate playdate as pd;
 
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::vec::Vec;
 use crankit_game_loop::{game_loop, Game, Playdate};
 use pd::controls::buttons::PDButtonsExt;
@@ -14,6 +13,10 @@ use pd::graphics::BitmapDrawMode;
 use pd::sys::ffi::{LCD_COLUMNS, LCD_ROWS};
 use pd::system::System;
 use playdate::graphics::Graphics;
+
+use rand::rngs::SmallRng;
+use rand::RngCore;
+use rand::SeedableRng;
 
 const ROWS: usize = LCD_ROWS as usize;
 const COLUMNS: usize = 2 + (LCD_COLUMNS / 8) as usize;
@@ -167,21 +170,11 @@ fn convert_intro_to_sand(frame: &[u8], sand_buffer: &mut [u8]) {
     }
 }
 
-// Simple pseudo-random number generator (Linear Congruential Generator)
-static mut RAND_SEED: u32 = 1;
-
-fn simple_rand() -> u32 {
-    unsafe {
-        RAND_SEED = RAND_SEED.wrapping_mul(1103515245).wrapping_add(12345);
-        RAND_SEED
-    }
-}
-
-fn rand_range(min: usize, max: usize) -> usize {
+fn rand_range(min: usize, max: usize, rng: &mut SmallRng) -> usize {
     if max <= min {
         return min;
     }
-    min + (simple_rand() as usize % (max - min))
+    min + (rng.next_u32() as usize % (max - min))
 }
 
 // Fast approximation of sine using libm
@@ -552,18 +545,14 @@ fn draw_intro() {
 }
 
 // Create initial platforms with random angles
-fn create_initial_platforms() -> Vec<Platform> {
-    unsafe {
-        RAND_SEED = 12345;
-    }
-
+fn create_initial_platforms(rng: &mut SmallRng) -> Vec<Platform> {
     let mut platforms = Vec::new();
 
     // Generate 8 random diagonal platforms with random angles (0-360 degrees)
     for _ in 0..8 {
-        let x = rand_range(50, PIXEL_WIDTH - 50);
-        let y = rand_range(30, ROWS - 50);
-        let angle = simple_rand() % 360;
+        let x = rand_range(50, PIXEL_WIDTH - 50, rng);
+        let y = rand_range(30, ROWS - 50, rng);
+        let angle = rng.next_u32() % 360;
 
         platforms.push(Platform::new(x, y, angle));
     }
@@ -587,7 +576,7 @@ fn process_input(game: &mut FallingSand) {
     if game.started {
         let rain_rate = 6; // Reduced rate for better platform interaction
         for _ in 0..rain_rate {
-            let x = rand_range(0, PIXEL_WIDTH);
+            let x = rand_range(0, PIXEL_WIDTH, &mut game.rng);
             set_pixel(&mut *game.sand_buffer, x, 0, true);
         }
     }
@@ -695,6 +684,7 @@ fn process_input(game: &mut FallingSand) {
 }
 
 struct FallingSand {
+    rng: SmallRng,
     started: bool,
     position_x: usize,
     position_y: usize,
@@ -719,13 +709,19 @@ impl Game for FallingSand {
         let mut platform_buffer = Box::new([0; BUFFER_SIZE]);
         let velocity_buffer = Box::new([SandVelocity::default(); PIXEL_WIDTH * ROWS]);
 
-        let platforms = create_initial_platforms();
+        let time = System::Cached().seconds_since_epoch();
+        let mut rng = SmallRng::seed_from_u64(time as u64);
+
+        let platforms = create_initial_platforms(&mut rng);
         redraw_platforms(&mut *platform_buffer, &platforms);
 
         copy_to_frame(&*sand_buffer, &*platform_buffer, frame);
         draw_intro();
 
+        // Display::Cached().set_scale(scale);
+
         Self {
+            rng,
             started: false,
             position_x: PIXEL_WIDTH / 2,
             position_y: ROWS / 4,

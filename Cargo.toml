@@ -15,6 +15,7 @@ crate-type = [
 playdate = "0.2.6"
 crankit-game-loop = { git = "https://github.com/pomettini/crankit-game-loop.git" }
 libm = "0.2.15"
+rand = { version = "0.9.2", features = ["small_rng"], default-features = false }
 
 [package.metadata.playdate]
 name = "Falling Sand"
